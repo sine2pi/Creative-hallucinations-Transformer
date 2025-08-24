@@ -16,6 +16,7 @@ The embers, like tiny red eyes, watched as the wind whispered tales of the deep 
 
 ```python
 
+## initial ideas / outlines
 
 import torch
 import torch.nn as nn
@@ -189,4 +190,98 @@ class CreativeFusionTransformer(nn.Module):
 
             return generated_tokens
 
+```
+
+```python
+
+
+class AudioEncoder(nn.Module):
+    def __init__(self, latent_dim=128):
+        super().__init__()
+        self.conv_stack = nn.Sequential(
+            nn.Conv2d(1, 32, 3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Flatten()
+        )
+        self.fc_mu = nn.Linear(64 * 8 * 8, latent_dim) # Example dimensions
+        self.fc_logvar = nn.Linear(64 * 8 * 8, latent_dim)
+
+    def forward(self, x):
+        x = self.conv_stack(x)
+        mu = self.fc_mu(x)
+        logvar = self.fc_logvar(x)
+        return mu, logvar
+
+class TextEncoder(nn.Module):
+    def __init__(self, vocab, embed_dim=256, latent_dim=128):
+        super().__init__()
+        self.embedding = nn.Embedding(vocab, embed_dim)
+        self.lstm = nn.LSTM(embed_dim, hidden_size=256, batch_first=True)
+        self.fc_mu = nn.Linear(256, latent_dim)
+        self.fc_logvar = nn.Linear(256, latent_dim)
+
+    def forward(self, x):
+
+        x = self.embedding(x)
+        _, (hn, _) = self.lstm(x)
+        hn = hn.squeeze(0)
+        mu = self.fc_mu(hn)
+        logvar = self.fc_logvar(hn)
+        return mu, logvar
+
+class Decoder(nn.Module):
+    def __init__(self, vocab, latent_dim=128):
+        super().__init__()
+
+        self.audio_fc = nn.Linear(latent_dim, 64 * 8 * 8)
+        self.audio_deconv = nn.Sequential(
+            nn.ConvTranspose2d(64, 32, 3, stride=2, padding=1, output_padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, 1, 3, stride=2, padding=1, output_padding=1),
+            nn.Sigmoid()
+        )
+
+        self.text_fc = nn.Linear(latent_dim, 256)
+        self.text_lstm = nn.LSTM(256, hidden_size=256, batch_first=True)
+        self.text_out = nn.Linear(256, vocab) 
+
+    def forward_audio(self, z):
+        z = self.audio_fc(z)
+        z = z.view(-1, 64, 8, 8)
+        return self.audio_deconv(z)
+
+    def forward_text(self, z, seq_len):
+        z = self.text_fc(z)
+        text_logits = self.text_out(z).unsqueeze(1).repeat(1, seq_len, 1)
+        return text_logits
+
+class MultimodalVAE(nn.Module):
+    def __init__(self, vocab, latent_dim=128):
+        super().__init__()
+        self.audio_encoder = AudioEncoder(latent_dim)
+        self.text_encoder = TextEncoder(vocab, latent_dim=latent_dim)
+        self.decoder = Decoder(latent_dim)
+        self.vocab = vocab
+
+    def reparameterize(self, mu, logvar):
+        std = torch.exp(0.5 * logvar)
+        eps = torch.randn_like(std)
+        return mu + eps * std
+
+    def poe(self, mu_a, logvar_a, mu_t, logvar_t):
+        mu_poe = (mu_a * torch.exp(logvar_t) + mu_t * torch.exp(logvar_a)) / (torch.exp(logvar_a) + torch.exp(logvar_t))
+        logvar_poe = (logvar_a * logvar_t) / (logvar_a + logvar_t)
+        return mu_poe, logvar_poe
+
+    def forward(self, audio, text):
+        mu_a, logvar_a = self.audio_encoder(audio)
+        mu_t, logvar_t = self.text_encoder(text)
+        mu_shared, logvar_shared = self.poe(mu_a, logvar_a, mu_t, logvar_t)
+        z = self.reparameterize(mu_shared, logvar_shared)
+
+        audio_recon = self.decoder.forward_audio(z)
+        text_recon = self.decoder.forward_text(z, text.size(1))
+        return audio_recon, text_recon, mu_shared, logvar_shared
 ```
