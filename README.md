@@ -1,18 +1,4 @@
-A bi-modal model that has its wires crossed.. Outline.
-
-Synesthesia: Try to simulate synesthetic experiences, translating one sensory input (audio) into another (narrative), similar to projects that create images from sounds.
-
-A hypothetical example: A story from a campfire sound
-
-Input: A 30-second audio clip of a crackling campfire.
-
-Standard ASR Transcription: [sound of fire crackling]
-
-Creative Hallucination (Story Output):
-The fire crackled, a warm and hungry breath against the cold night. In its dancing light, old memories stirred, 
-shadows of faces long gone that laughed and told stories in the same shifting glow. 
-The embers, like tiny red eyes, watched as the wind whispered tales of the deep woods, and the air filled with the quiet, smoky magic that only a campfire can make.
-
+A bi-modal model with enhanced hallucinations.. Outline.
 
 ```python
 
