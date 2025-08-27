@@ -51,46 +51,40 @@ class TextEncoder(nn.Module):
         return self.transformer_encoder(x)
 
 class AttentionA(nn.Module):
-    def __init__(self, dims: int, head: int):
+    def __init__(n, dims: int, head: int, layer: int, norm_type):
         super().__init__()
-        self.head = head
-        self.dims = dims
-        self.head_dim = dims // head
-        
-        self.ln = nn.LayerNorm(dims)
-        self.q = nn.Linear(dims, dims, bias=False)
-        self.kv = nn.Linear(dims, dims * 2, bias=False)
-        self.out = nn.Linear(dims, dims, bias=False)
-        
-        self.x_conv = nn.Conv2d(head, head, 1, bias=False)
-        self.xa_conv = nn.Conv2d(head, head, 1, bias=False)
+        n.head = head
+        n.scale = dims // head ** -0.5      
+        n.ln = nn.LayerNorm(dims // head)
 
-    def forward(self, x, xa=None, mask=None):
-        xa = x if xa is None else xa
-        b, n, d = x.shape
-        b, m, d = xa.shape
+        n.qa   = nn.Sequential(get_norm(norm_type, dims), nn.Linear(dims, dims), Rearrange('b c (h d) -> b h c d', h = head))
+        n.va   = nn.Sequential(get_norm(norm_type, dims), nn.Linear(dims, dims), Rearrange('b c (h d) -> b h c d', h = head))        
+        n.qb   = nn.Sequential(get_norm(norm_type, dims), nn.Linear(dims, dims), Rearrange('b c (h d) -> b h c d', h = head))
+        n.vb   = nn.Sequential(get_norm(norm_type, dims), nn.Linear(dims, dims), Rearrange('b c (h d) -> b h c d', h = head))              
+        n.out = nn.Sequential(Rearrange('b h n d -> b n (h d)'), nn.Linear(dims, dims), nn.Dropout(0.01))
+                
+        n.conva = nn.Conv2d(head, head, 1, bias=False)
+        n.convb = nn.Conv2d(head, head, 1, bias=False)
 
-        q = self.q(self.ln(x))
-        k, v = self.kv(self.ln(x)).chunk(2, dim=-1)
-        ka, va = self.kv(self.ln(xa)).chunk(2, dim=-1)
+        n.register_buffer('freqs_base', compute_freqs_base(dims // head), persistent=False)
+        n.rotary = RotaryEmbedding(dims // head, custom_freqs = (36000 / 220.0) * n.freqs_base)  
 
-        q, k, v = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.head), (q, k, v))
-        ka, va = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.head), (ka, va))
+    def forward(n, x, xa=None, mask=None):
 
-        # Text attends to audio
-        attn_weights_x = torch.einsum('b h i d, b h j d -> b h i j', q, ka)
-        attn_probs_x = F.softmax(attn_weights_x, dim=-1)
-        x_updated = torch.einsum('b h i j, b h j d -> b h i d', attn_probs_x, va)
-        
-        # Audio attends to text (bidirectional)
-        attn_weights_xa = torch.einsum('b h j d, b h i d -> b h j i', ka, q)
-        attn_probs_xa = F.softmax(attn_weights_xa, dim=-1)
-        xa_updated = torch.einsum('b h j i, b h i d -> b h i d', attn_probs_xa, v)
+        qa, va = n.qa(x), n.va(x)
+        qb, vb = n.qb(xa), n.vb(xa)
+        qk = einsum('b h k d, b h q d -> b h k q', n.ln(qa), n.ln(qb)) * n.scale
 
-        x_updated = rearrange(x_updated, 'b h n d -> b n (h d)')
-        xa_updated = rearrange(xa_updated, 'b h n d -> b n (h d)')
+        qka = qk.softmax(dim = -1)
+        qkb = qk.softmax(dim = -2)
 
-        return self.out(x_updated), self.out(xa_updated)
+        qka = n.conva(qka)
+        qkb = n.convb(qkb)
+
+        outa = einsum('b h k q, b h q d -> b h k d', qka, vb)
+        outb = einsum('b h q k, b h q d -> b h k d', qkb, va)
+
+        return n.out(outa), n.out(outb)
 
 class CreativeFusionBlock(nn.Module):
     def __init__(self, dims: int, head: int, blend: bool = True, modal: bool = True):
