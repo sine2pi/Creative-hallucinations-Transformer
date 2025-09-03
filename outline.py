@@ -46,8 +46,8 @@ class AttentionA(nn.Module):
         self.x_conv = nn.Conv2d(head, head, 1, bias=False)
         self.xa_conv = nn.Conv2d(head, head, 1, bias=False)
 
-    def forward(self, x, xa=None, mask=None):
-        xa = x if xa is None else xa
+    def forward(self, x, xa, mask=None):
+
         b, n, d = x.shape
         b, m, d = xa.shape
 
@@ -59,17 +59,17 @@ class AttentionA(nn.Module):
         ka, va = map(lambda t: rearrange(t, 'b n (h d) -> b h n d', h=self.head), (ka, va))
 
         # Text attends to audio
-        attn_weights_x = torch.einsum('b h i d, b h j d -> b h i j', q, ka)
+        attn_weights_x = torch.einsum('b h q d, b h k d -> b h q k', q, ka)
         attn_probs_x = F.softmax(attn_weights_x, dim=-1)
-        x_updated = torch.einsum('b h i j, b h j d -> b h i d', attn_probs_x, va)
+        x_updated = torch.einsum('b h q k, b h k d -> b h q d', attn_probs_x, va)
         
         # Audio attends to text (bidirectional)
-        attn_weights_xa = torch.einsum('b h j d, b h i d -> b h j i', ka, q)
+        attn_weights_xa = torch.einsum('b h k d, b h q d -> b h k q', ka, q)
         attn_probs_xa = F.softmax(attn_weights_xa, dim=-1)
-        xa_updated = torch.einsum('b h j i, b h i d -> b h i d', attn_probs_xa, v)
+        xa_updated = torch.einsum('b h k q, b h q d -> b h k d', attn_probs_xa, v)
 
-        x_updated = rearrange(x_updated, 'b h n d -> b n (h d)')
-        xa_updated = rearrange(xa_updated, 'b h n d -> b n (h d)')
+        x_updated = rearrange(x_updated, 'b h q d -> b q (h d)')
+        xa_updated = rearrange(xa_updated, 'b h k d -> b k (h d)')
 
         return self.out(x_updated), self.out(xa_updated)
 
